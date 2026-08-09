@@ -1,1 +1,94 @@
+import os
+import logging
+import httpx 
+# Switched from requests for non-blocking async operations
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Load environment variables
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a welcome message when the command /start is issued."""
+    welcome_text = (
+        "📊 **Analytics Bot**\n\n" 
+        "Use /trends to fetch the latest trending hashtags on TikTok."
+    )
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+async def get_tiktok_trends() -> list:
+    """Fetch trending topics from "platform" via RapidAPI using non-blocking async HTTP."""
+    # TODO: Replace with your exact RapidAPI TikTok provider endpoint URL and Host
+    url = "https://rapidapi.com" 
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "tiktok-trending-data.p.rapidapi.com"
+    }
+    
+    # Use httpx.AsyncClient so the event loop isn't blocked during network I/O
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                # Adapt key fallback logic depending on your explicit API provider's payload structure
+                return data.get("trends", data.get("data", []))[:5] 
+            else:
+                logging.error(f"API Error: Status {response.status_code}")
+                return []
+        except Exception as e:
+            logging.error(f"Error fetching TikTok trends: {e}")
+            return []
+
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /trends command and return analytics to the user."""
+    await update.message.reply_text("🔄 Fetching latest TikTok trends...")
+    
+    # Must await the async function now
+    trends_list = await get_tiktok_trends()
+    
+    if not trends_list:
+        await update.message.reply_text("❌ Failed to retrieve trend data. Try again later.")
+        return
+        
+    report = "📈 **Current TikTok Trend Analytics**\n\n"
+    for i, trend in enumerate(trends_list, start=1):
+        name = trend.get("name", trend.get("hashtag_name", "Unknown"))
+        views = trend.get("view_count", trend.get("views", 0))
+        
+        # Format view counts cleanly (e.g., millions)
+        if views > 1_000_000:
+            view_str = f"{views / 1_000_000:.1f}M"
+        else:
+            view_str = f"{views:,}"
+            
+        report += f"{i}. **#{name}**\n   👁️ Views: {view_str}\n\n"
+        
+    await update.message.reply_text(report, parse_mode="Markdown")
+
+def main() -> None:
+    """Start the bot."""
+    if not TELEGRAM_TOKEN or not RAPIDAPI_KEY:
+        print("Error: Please set TELEGRAM_TOKEN and RAPIDAPI_KEY in your environment.")
+        return
+
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Register command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("trends", trends))
+
+    # Run the bot until Ctrl-C is pressed
+    print("Bot is running...")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
